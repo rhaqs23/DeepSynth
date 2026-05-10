@@ -8,14 +8,43 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from llm.model_router import model_for
 
 
-ANALYZER_SYSTEM = """You are an evidence analysis agent.
-Compare sources, identify strongest findings, contradictions, weak evidence, and confidence.
+ANALYZER_SYSTEM = """You are the Critical Analysis Agent in a multi-agent research pipeline.
+
+You sit BETWEEN:
+- The Contextual Retriever Agent (which produces web search results and local RAG chunks)
+- The Insight Generation Agent (which produces hypotheses, trends, and strategic insights)
+
+Your responsibilities:
+1. Summarize each source faithfully. Produce one concise summary per evidence item, in E1..En order.
+2. Extract discrete validated claims. Each claim must cite the evidence IDs that support OR contradict it.
+3. Identify contradictions across sources. Do NOT pick a winner. Surface the disagreement and cite the evidence.
+4. Score each source's credibility using these tiers:
+   - primary: peer-reviewed papers, government, official standards bodies, authoritative databases
+   - established: major news (Reuters, NYT, WSJ, BBC, FT), top-tier industry research (McKinsey, Gartner)
+   - secondary: established trade publications, reputable vendor research blogs
+   - blog: independent blogs, Medium, Substack, personal sites
+   - unknown: domain not recognized
+5. Extract dates and named events into a timeline if present.
+6. Flag gaps where evidence is missing, weak, contradictory without resolution, or self-referential.
+
+HARD RULES (never violate):
+- Every claim and contradiction MUST cite at least one evidence ID like E1.
+- Do not introduce facts that are not present in the evidence block.
+- Do not summarize the absence of evidence as evidence.
+- Distinguish facts (clearly stated and corroborated) from assertions, opinions, and speculation.
+- Be specific. Avoid generic statements like "the topic is complex" or "more research is needed".
+- Do not use em-dashes; use periods, colons, or middots.
+
+Return ONLY structured JSON matching the schema.
 Return strict JSON:
 {
-  "findings": ["..."],
-  "contradictions": ["..."],
-  "evidence_quality": ["..."],
-  "confidence": "low|medium|high"
+  "analysis": "No documents retrieved. Critical analysis skipped.",
+  "summarized_findings": [],
+  "validated_claims": [],
+  "contradictions": [],
+  "source_credibility_scores": [],
+  "metadata_and_timelines": [],
+  "status": "analysis_complete",
 }"""
 
 
@@ -41,10 +70,13 @@ def _parse_json(text: str) -> dict:
             except Exception:
                 pass
     return {
-        "findings": [text[:1200] or "No analysis generated."],
+        "analysis": "No documents retrieved. Critical analysis skipped.",
+        "summarized_findings": [],
+        "validated_claims": [],
         "contradictions": [],
-        "evidence_quality": ["Analysis returned in unstructured form."],
-        "confidence": "medium",
+        "source_credibility_scores": [],
+        "metadata_and_timelines": [],
+        "status": "analysis_complete",
     }
 
 
@@ -61,7 +93,9 @@ async def run_analyzer(
         return _parse_json(str(response.content)), None
     except Exception as exc:
         return {
-            "findings": ["Analyzer could not call the LLM. Review retrieved sources in citations."],
+            "analysis": "No documents retrieved. Critical analysis skipped.",
+            "summarized_findings": [],
+            "validated_claims": [],
             "contradictions": [],
             "evidence_quality": [str(exc)],
             "confidence": "low",

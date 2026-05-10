@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 import streamlit as st
+from streamlit.components.v1 import html as st_html
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,6 +17,7 @@ if str(ROOT) not in sys.path:
 from graph.workflow import AGENT_ORDER, run_research_stream  # noqa: E402
 from llm.model_router import SUPPORTED_MODELS, default_models  # noqa: E402
 from utils.config import settings  # noqa: E402
+from utils.export_manager import generate_export  # noqa: E402
 
 
 AGENT_LABELS = {
@@ -60,6 +63,7 @@ def init_session() -> None:
     st.session_state.setdefault("durations", {})
     st.session_state.setdefault("execution_duration", 0.0)
     st.session_state.setdefault("render_revision", 0)
+    st.session_state.setdefault("download_format", "md")
 
 
 def reset_run_state() -> None:
@@ -200,6 +204,31 @@ def render_sources(sources: list[dict]) -> None:
             st.write(content or "No snippet available.")
 
 
+def render_report_with_charts(report_markdown: str) -> None:
+    """Render markdown report with embedded charts."""
+    # Split by iframe tags to handle charts separately
+    parts = re.split(r'(<iframe[^>]*src="file://([^"]+)"[^>]*></iframe>)', report_markdown)
+    
+    for part in parts:
+        if part.startswith('<iframe'):
+            # Extract file path from the iframe tag
+            match = re.search(r'src="file://([^"]+)"', part)
+            if match:
+                file_path = match.group(1)
+                try:
+                    # Read the HTML file and render it
+                    with open(file_path, 'r') as f:
+                        html_content = f.read()
+                    st_html(html_content, height=650)
+                except FileNotFoundError:
+                    st.warning(f"Chart file not found: {file_path}")
+                except Exception as e:
+                    st.error(f"Error rendering chart: {e}")
+        elif part and not part.startswith('<iframe'):
+            # Regular markdown
+            st.markdown(part, unsafe_allow_html=True)
+
+
 async def execute_research(
     user_query: str,
     api_key: str,
@@ -285,13 +314,34 @@ def render_into_tabs(tab_slots) -> None:
     report_slot.empty()
     with report_slot.container():
         if st.session_state.report:
-            st.markdown(st.session_state.report)
+            download_format = st.selectbox(
+                "Download Format",
+                ["md", "pdf", "docx"],
+                index=["md", "pdf", "docx"].index(st.session_state.download_format),
+                key="download_format_selection"
+            )
+            
+            # Update session state with selection
+            st.session_state.download_format = download_format
+
+            exported_file = generate_export(
+                st.session_state.report,
+                download_format
+            )
+
+            mime_types = {
+                "md": "text/markdown",
+                "pdf": "application/pdf",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+
+            render_report_with_charts(st.session_state.report)
             st.download_button(
-                "Download markdown report",
-                data=st.session_state.report,
-                file_name="deep_research_report.md",
-                mime="text/markdown",
-                key=f"download_report_{render_revision}",
+                label=f"Download {download_format.upper()}",
+                data=exported_file,
+                file_name=f"deep_research_report.{download_format}",
+                mime=mime_types[download_format],
+                key=f"download_report_{download_format}_{render_revision}",
             )
         else:
             st.info("The final markdown report will appear here.")
